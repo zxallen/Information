@@ -1,0 +1,544 @@
+新经资讯项目业务逻辑梳理
+
+
+ 一、项目分析
+（一）新经资讯
+1、新闻展示的Web项目
+2、以抓取其他网站数据为新闻、用户发布数据为来源
+3、基于Flask框架，前后端不分离
+（二）技术实现
+1、使用Flask框架实现
+2、使用Redis + MySQL 进行数据存储
+3、使用第三方扩展
+（1）云通信
+（2）七牛云
+（三）功能模块分类
+1、新闻模块
+2、用户模块
+3、后台管理模块
+ 
+ 
+（四）项目目录说明
+1、项目根目录 说明
+/info 项目应用核心目录
+/logs 项目日志目录
+config.py 项目配置文件--保存session信息、调试模式、密钥等
+manage.py 项目启动文件
+requirements.txt     项目依赖文件
+ 
+2、项目/info目录 说明
+/libs 项目用到的资源库--第三方扩展(云通信)
+/modules 项目模块--所有的蓝图对象和视图函数
+/static 项目静态文件夹
+/template 项目模板文件夹
+/utils 项目通用设施--自定义状态码、上传图片等
+__init__.py 项目应用初始化文件--应用程序实例、数据库实例、注册蓝图、日志等
+constants.py 项目常量信息--数据库缓存信息、验证码、房屋信息等
+models.py 项目模型类
+ 
+ 
+3、项目/info/libs目录 说明
+/yuntongxun 第三方扩展--发送短信
+sms.py 发送短信
+4、项目/info/static目录 说明
+/admin/ 项目admin模块的静态文件，css/html/js等
+/news/ 项目admin模块的静态文件，css/html/js等
+favicon.ico 项目logo
+ 
+5、项目/info/utils目录 说明
+image_storage.py 云存储设施文件--七牛云
+response_code.py 自定义状态码
+ 
+注意：
+一、用工厂方法来实例化应用对象app
+def create_app(config_name):
+     app = Flask(__name__) //实例化启动app
+app.config.from_object(config[config_name])  //导入配置信息并动态传入配置信息
+     db.init_app(app) //关联db和app
+     Session(app) //把Session对象和app关联
+     CSRFProtect(app) // csrf保护关联app
+**此处使用请求钩子,在每次请求之后将csrf_token的值传给前端页面**
+     **此处用来注册蓝图对象
+     from pro_info.modules.news import news_blue
+     app.register_blueprint(news_blue)
+……
+**注册模板使用的过滤器**
+     from pro_info.utils.common import do_index_class
+     app.add_template_filter(do_index_class, 'index_class')
+return app
+ 
+二、每次的请求都需要设置跨站保护，该方法可以使用请求钩子的方法，即每次请求之后执行,这个功能可以设置在实例化应用对象的时候就定义，即放在__init__.py文件中的实例化app对象的工厂方法中
+@app.after_request
+def after_request(response):
+    csrf_token = csrf.generate_csrf()
+    response.set_cookie('csrf_token',csrf_token)
+    return response
+并在前端的ajax中设置请求头
+headers:{
+X-CSRFToken:getCookie('csrf_token')
+}
+三、由于很多接口需要判断用户是否在线的情况，对此我们采用的是用装饰器（登录验证装饰器）的方式实现这一功能的。
+def login_required(f): è 定义一个方法，方便被调用
+     @functools.wraps(f) è 这是一个python内置的装饰器工具，目的是让被装饰的函数的属性不会被改变
+     def wrapper(*args,**kwargs):
+         user_id = session.get('user_id') è 尝试获取用户的登录信息
+         user = None
+         if user_id:
+             try:
+                 user = User.query.get(user_id)
+             except Exception as e:
+                 current_app.logger.error(e)
+         g.user = user è 使用引用上下文的g变量来保存用户的信息
+         return f(*args,**kwargs)
+//具体的实现方式是让被装饰的函数的名称在返回wrapper之前赋值给wrapper的__name__ è wrapper.__name__ = f.__name__
+     return wrapper
+ 
+四、统一设置返回的错误页面
+由于用户的很多不恰当的操作，或者服务器的原因，导致页面无法显示等错误，我们可以设置指定的错误页面，可以使用
+app.errorhandle(code_or_exception) 装饰器来实现这一功能，来达到与用户的更加友好的交互页面，写在__init__文件的工厂方法中
+@app.errorhandle(错误码)
+@user_login_data
+def page_not_found(_):
+user = g.user
+data = {“user_info”:user.to_dict() if user else None}
+return render_template(‘指定的错误页面的模板文件’,data=data)
+ 
+五、为了更直观的展示后台数据效果，需要添加一些测试用户到数据库中，再目录下新建一个.py文件,复制如下代码直接运行即可
+import datetime
+import random
+from info import db
+from info.models import User
+from manage import app
+ 
+def add_test_users():
+     users = []
+     now = datetime.datetime.now()
+     for num in range(0, 10000):
+         try:
+             user = User()
+             user.nick_name = "%011d" % num
+             user.mobile = "%011d" % num
+         user.password_hash="pbkdf2:sha256:50000$SgZPAbEj$a253b9220b7a916e03bf27119d401c48ff4a1c81d7e00644e0aaf6f3a8c55829"
+             user.last_login = now - datetime.timedelta(seconds=random.randint(0, 2678400))
+             users.append(user)
+              print(user.mobile)
+         except Exception as e:
+             print(e)
+     # 手动开启一个app的上下文
+     with app.app_context():
+         db.session.add_all(users)
+db.session.commit()
+     print('OK')
+ 
+if __name__ == '__main__':
+     add_test_users()
+ 新闻首页模块
+一、注册相关接口
+（一）图片验证码
+1、获取前端生成的UUID编码
+image_code_id = generate()前端调用该方法生成UUID编号，并发送给服务器
+由于这是一个imp标签所以服务器可以request.args.get()获取到这个编码
+2、调用captcha(图灵测试)扩展生成图片验证码
+对获取到的参数进行验证，判断是否存在
+存在则：name,text,image = captcha.generate_captcha()调用captcha生成图片验证码
+3、以前端获取的UUID为键，captcha生成的text为值，存储到Redis数据库中
+使用Redis数据库redis_store.setex(imageCodeId,time,text)将数据进行保存
+4、使用flask中的make_response将图片返回给前端页面
+response = make_response(image)
+5、修改前端相应报头并返回
+response. headers['Content-Type'] = 'image/jpg'
+return….
+（二）发送手机短信
+1、根据接口文档指定请求方式，以及确定需要接受的参数
+2、对接受的参数进行校验
+（1）确认参数的完整性
+if not all([mobile,image_code,image_code_id])
+return…
+（2）确认手机号是否符合规范（采用正则的方式验证）
+if not re.match(r‘1[3456789]\d{9}’,mobile)
+return…
+（3）确认验证码是否正确，从Redis数据库中取出之前保存的text值进行比对，为防止二次使用验证码，取出后删除数据库中数据
+real_image_code = redis_store.get(image_code_id)
+redis_store. delete(…)
+if not real_image_code.lower() != image_code.lower()
+return…
+3、参数校验完成后判断用户是否已经注册
+查询MySQL数据库中是否存在该用户
+user = User.query.filter_by(mobile=mobile).first()
+if user 表示用户存在已经注册
+return…
+4、生成6位随机数，并以用户手机号位键，随机数位值将数据存储到Redis数据库
+sms_code = '%06d' % random.randint(0,999999)
+redis_store.setex(mobile,time,sms_code)
+5、调用第三方云通讯接口发送生成的6位随机数给用户手机，
+生成6位随机数：sms_code = '%06d' % random.randint(0,999999)
+调用云通讯发送短信：ccp = sms.CCP()
+         result = ccp.send_template_sms(mobile,[sms_code,time / 60],1)
+如果result == 0 表示发送成功，else发送失败
+（三）注册按钮
+1、根据接口文档指定请求方式，以及确定需要接受的参数
+2、对接受的参数进行校验
+（1）确认参数的完整性
+if not all([mobile,sms_code,password])
+return…
+（2）确认手机号是否符合规范（采用正则的方式验证）
+if not re.match(r‘1[3456789]\d{9}’,mobile)
+return…
+（3）确认手机验证码是否正确，从Redis数据库中取出之前保存的sms_code值进行比对，为防止二次使用，取出后删除数据库中数据
+real_sms_code = redis_store.get(mobile)
+由于之前设置的是有时效的数据，因此需要判断是否还存在该sms_code
+redis_store.delete(…)
+if not real_sms_code != str(sms_code)
+return…
+3、将用户的数据存储到MySQL数据库
+user = User()
+user.moblie = mobile
+user.password = password(加密存储)
+user.nike_name = mobile(给用户默认设置一个昵称)
+db.session.add(user)
+db.session,commit()
+4、为实现状态保持，将用户的注册的信息存储到Reids数据库中,并提示注册完成
+session['user_id'] = user.id
+     session['mobile'] = user.mobile
+     session['nick_name'] = mobile
+二、登录相关接口
+1、根据接口文档确定需要接受的参数以及请求方式
+2、校验参数的完整性
+if not all([mobile,password])
+3、判断手机号码是否符合规则
+if not re.match(r‘1[3456789]\d{9}’,mobile)
+return…
+4、根据手机号码进行MySQL的数据查找
+user = User.query.filter_by(mobile=mobile).first()
+5、判断是否存在用户或则密码是否正确
+if user is None or not user.check_password(password)（调用加密密码的检查匹对方法）
+return
+6、保存用户的登录信息并记录用户的最后登录时间
+session['user_id'] = user.id
+     session['mobile'] = mobile
+     session['nick_name'] = user.nick_name
+ 
+     user.last_login = datetime.now()
+7、记录的用户登录时间需要提交到数据库中
+db.session.commit()
+8、返回提示用户登录成功
+三、退出相关接口
+退出即删除用户的登录信息
+session.pop('user_id')
+     session.pop('mobile')
+session.pop('nick_name')
+此处建议使用pop()方法，不建议使用clear()方法
+ 
+四、主页相关接口
+采用模板的方式，所以需要导入render_template
+1、确认用户是否登录在线
+user = g.user //此处是定义的装饰器（登录验证装饰器）
+2、展示点击排行按点击量进行排序查找，且根据前端的设计是显示的六条信息
+news_list = News.query.order_by(News.clicks.desc()).limit(6)
+3、判断点击排行数据查找结果是否存在
+if not news_list:
+return…
+4、定义一个列表容器保存查询结果
+news_dict_list = []
+5、遍历所有的查询对象并添加到列表容器中，并调用模型类中to.dict()的方法将之转换成字符串
+for news in news_list:
+news_dict_list.append(news.to_dict())
+6、展示新闻分类数据需搜索所有分类信息
+categories = Category.query.all()
+7、判断分类数据是否存在
+if not categories:
+return
+8、定义一个列表容器保存查询结果
+category_list = []
+9、遍历所有的查询对象并添加到列表容器中，并调用模型类中to.dict()的方法将之转换成字典
+for category in categories:
+category_list.append(category.to_dict())
+10、定义一个字典保存所有数据，并将之传给模板进行数据填充
+data = {
+         "user":user.to_dict() if user else None,//表示如果用户未登录的情况下也是可以访问主页面的
+          "news_dict_list":news_dict_list,
+         "category_list":category_list
+     }
+return render_template(‘模板’，data=data)
+ 
+五、首页新闻数据列表接口
+1、根据接口文档定义路由，请求方式以及需要哪些参数等（备注：ajax/get请求）
+2、接受所需要参数并进行校验（cid，page，per_page）
+为实现友好的交互，即使后端没传过来数据，在首页也是需要展示新闻的，所以我们默认会给其定义一个参数
+cid = request.args.get('cid','1') è分类id
+     page = request.args.get('page','1')
+     per_page = request.args.get('per_page','10')
+3、校验参数，并将数字参数转换成整型值（为了和数据库进行查找）
+try:
+         cid,page,per_page = int(cid),int(page),int(per_page)
+     except Exception as e:
+return
+4、根据参数进行查询数据库
+（1）定义变量，存储过滤条件è根据分类id
+filters = []
+if cid > 1:  => filters.append(News.category_id == cid)
+（2）默认按照分类id进行过滤，按新闻发布时间进行排序，对查询数据进行分页
+paginate = News.query.filter(*filters).order_by(News.create_time.desc()).paginate(page,per_page,False)
+paginate（页数，每页多少条目数，分页异常不报错）
+5、获取分页后的新闻数据模型对象，总页数以及当前页数
+news_list = paginate.items //模型对象
+     total_page = paginate.pages //总页数
+     current_page = paginate.page //当前页数
+6、遍历模型对象并添加到一个列表容器，使用to_dict()方法转换成字典
+for news in news_list:
+         news_dict_list.append(news.to_dict())
+7、准备返回数据：
+(1) data = {
+(2)         'news_dict_list':news_dict_list,
+(3)         'total_page':total_page,
+(4)         'current_page':current_page
+(5)     }
+8、进行返回 return jsonify(errno=RET.OK,errmsg='OK',data=data)
+ 
+ 
+ 新闻详情页模块
+一、详情页模板接口
+1、获取参数以url传参的形式获取参数
+@蓝图对象.route(‘/<int:news_id>’)
+def get_news_detail(news_id):
+2、判断用户是否登录在线，并获取用户信息
+user = g.user
+3、根据news_id进行查询数据库
+news = News.query.get(news_id)
+4、检查查询的结果
+if not news：
+return…
+5、展示详情页的分类数据，查询数据库
+categories = Category.query.all()
+6、检查查询的结果，并定义容器保存遍历的查询对象
+if not categories：
+return…
+7、将新闻详情的点击次数 +1
+news.clicks += 1
+8、判断是否收藏，默认情况为False，如果用户已经登录，并且被该用户收藏
+is_collected = False
+    if user and news in user.collection_news:
+        is_collected = True
+9、评论内容，查询数据库获取当前新闻的所有评论
+comments = []
+comments = Comment.query.filter(Comment.news_id == news_id).order_by(Comment.create_time.desc()).all()
+ 
+10、判断用户登录
+if user:
+获取所有的评论id
+        comment_ids = [comment.id for comment in comments]
+再查询当前用户点赞了哪些评论
+    comment_likes = CommentLike.query.filter(CommentLike.comment_id.in_(comment_ids),CommentLike.user_id == g.user.id).all()
+获取当前用户点赞的评论id
+    comment_like_ids = [comment_like.comment_id for comment_like in comment_likes]
+11、定义一个列表用户来保存评论数据
+comment_dict_li = []
+12、遍历查询到所有评论数据
+    for comment in comments:
+        comment_dict = comment.to_dict()
+判断评论是否被点赞，默认为False 
+    comment_dict['is_like'] = False
+    if comment.id in comment_like_ids:
+        comment_dict['is_like'] = True
+将查询到的点赞的评论数据保存到之前定义的列表中
+    comment_dict_li.append(comment_dict)
+13、如果用户是登录的，查询用户关注的新闻发布者，默认为Falas
+is_followed = False    
+    if news.user and user:
+        if news.user in user.followers:
+            is_followed = True
+14、将所有数据添加到一个字典容器中
+data = {
+        "news":news.to_dict(),
+        "category_list":category_list,
+        'user': user.to_dict() if user else None,//如果用户未登录，那么有关用户的信息就为False，新闻详情页没必要规定用户必须在线
+        'is_collected': is_collected,
+        'is_followed': is_followed,
+        'comments': comment_dict_li
+    }
+15、调用模板页面返回数据，并对模板进行数据填充显示
+    return render_template('news/detail.html',data=data)
+ 
+二、收藏和取消收藏接口
+根据接口文档进行路由分析，指定请求方式
+1、尝试获取用户信息，如果用户未登录，需提示用户登录，才能进行收藏
+user = g.user
+if not user:
+return…
+2、获取参数news_id，action（collect，cancle_collect）
+request.json.get()方法获取
+3、检查参数，对news_id强转为整型值，对数据库进行查询，如果强转出错返回错误信息
+4、检查action的值是否存在
+if action not in ['collect', 'cancel_collect']:
+return…
+5、判断新闻是否存在数据库中
+news = News.query.get(news_id)
+if not news:
+return…
+6、判断选择的是collect还是cancle_collect,并判断用户是否收藏过该新闻,未收藏过添加到收藏，收藏过返回已收藏
+if action == collect:
+if news not in user.collection_news:
+user.collection_news.append(news)
+else:
+If news in  user.collection_news:
+User.collection_news.remove(news)
+7、提交数据库
+8、返回ajax响应信息
+ 
+三、关注和取消关注接口
+与收藏接口类似，只需根据接口文档定好路由以及请求方式，不过多赘述
+ 
+四、新闻评论接口
+根据接口文档确定路由及请求方式
+1、获取用户登录信息，如果用户未登录直接返回并提示登录
+user = g.user
+2、获取参数，news_id,comment,parent_id(回复的评论的id)
+request.json.get()方法
+3、校验参数完整性
+if not all([news_id,comment]):
+return…
+4、对news_id进行强转，并判断是否有parent_id，如果强转失败返回错误信息
+news_id = int（news_id）
+if parent_id:
+parent_id = int（parent_id）
+5、查询新闻并判断新闻是否存在
+news = News.query.get(news_id)
+if not news：
+return…
+6、实例化评论模型的对象，并添加数据
+comment = Comment()
+     comment.user_id = user.id
+     comment.news_id = news.id
+     comment.content = comment_conent
+7、判断父评论是否存在，存在则添加父评论的信息
+if parent_id：
+comment.parent_id = parent_id
+8、提交数据到数据库
+try:
+        db.session.add(comment)
+db.session.commit()
+    except Exception as e:
+        current_app.logger.error(e)
+        db.session.rollback()
+9、返回评论数据给前端ajax
+ 
+五、点赞和取消点赞接口
+根据接口文档确定路由及请求方式
+1、获取用户登录信息，如果用户未登录直接返回并提示登录
+user = g.user
+2、获取参数，comment_id,action(add,remove)
+request.json.get()方法
+3、校验参数完整性
+if not all([comment_id,action])
+return…
+if action not in [add,remove]
+return…
+4、把comment_id转成整型，强转错返回错误信息
+5、根据comment_id查询数据
+comment = Comment.query.get(comment_id)
+6、判断查询结果，如果不存在，返回错误信息
+7、判断action参数是否为add或者remove
+（1）如果为add，判断行为是点赞还是取消点赞，使用CommentLike进行过滤查询（user_id，comment.id）
+comment_like_model = CommentLike.query.filter(CommentLike.user_id == user.id, CommentLike.comment_id == comment.id).first()
+if not comment_like_model：è 点赞行为，点赞数加1
+    comment_like_model = CommentLike()
+        comment_like_model.user_id = user.id
+        comment_like_model.comment_id = comment.id
+        db.session.add(comment_like_model)
+        comment.like_count += 1
+（2）否则为取消点赞 è 取消点赞，点赞数减1
+db.session.delete(comment_like_model)
+        comment.like_count -= 1
+8、将数据提交到数据库中
+db.session.commit()
+9、返回结果给ajax
+ 
+ 个人中心模块
+基于iframe进行实现，子页面的数据更新之后需要同步主页面相关联数据，可以采用js进行实现，本项目即采用了ajax的数据交互方式
+一、用户页面接口
+这里我们用到的是之前就定义好的装饰器来获取的用户信息
+1、获取用户信息
+user = g.user
+2、判断是否获得了用户的信息，如果没有则重定向到主页
+if not user:
+return redirect(‘/’)
+3、将获取的用户信息使用字典容器保存起来
+4、将数据返回给user.html模板，进行页面显示
+二、用户基本信息展示和修改接口
+根据接口文档确定路由以及请求方式[‘GET’,‘POST’]
+1、判断请求方式，默认GET请求加载模板页面，可以直接以装饰器获取到用户的信息进行返回
+user = g.user
+if request.method == ‘GET’:
+将用户信息返回给模板
+return… è 模板为：user_base_info.html
+2、获取参数（signature,nick_name,gender(男，女)）
+request.json.get()方法
+3、校验参数的完整性
+if not all([signature,nick_name,gender])
+return…
+4、检查参数gender参数
+if gender not in [‘MAN’，‘WOMEN’]
+return…
+5、使用user对象将用户的基本信息保存到数据库
+user.signature = signature
+    user.nick_name = nick_name
+     user.gender = gender
+     try:
+         db.session.add(user)
+db.session.commit()
+     except Exception as e:
+         current_app.logger.error(e)
+         db.session.rollback()
+6、返回结果
+ 
+三、上传用户头像接口
+根据接口文档确定路由以及请求方式[‘GET’,‘POST’]
+1、判断请求方式，默认GET请求加载模板页面，可以直接以装饰器获取到用户的信息进行返回
+user = g.user
+if request.method == ‘GET’:
+将用户信息返回给模板
+return… è 模板为：user_pic_info.html
+2、获取参数（avatar）
+request.files.get()方法
+3、校验参数是否存在
+if not avatar：
+return…
+4、使用read()方法读取图片的二进制数据并保存
+avatar_data = avatar.read()
+5、调用第三方接口storage()，将图片上传到七牛云，并保存七牛云返回的图片名称
+image_name = storage(avatar_data)
+6、给用户保存图片的名称并提交到到数据库
+user.avatar_url = image_name
+try:
+         db.session.add(user)
+db.session.commit()
+     except Exception as e:
+         current_app.logger.error(e)
+         db.session.rollback()
+7、拼接图片的绝对路径并返回给ajax
+设置的七牛云地址 + image_name
+ 
+四、修改用户密码接口
+根据接口文档确定路由以及请求方式[‘GET’,‘POST’]
+1、判断请求方式，默认GET请求加载模板页面
+if request.method == ‘GET’:
+return… è 模板为：user_pass_info.html
+2、获取参数（old_password,new_password）
+request.json.get()方法
+3、检查参数完整性
+if not all([old_password,new_password])
+return…
+4、获取用户信息，并比较用户输入的旧密码，验证是否正确
+user = g.user
+if not user.check_password(old_password):
+return…
+5、验证成功后保存用户的新密码，并提交到数据库
+user.password = new_password
+     try:
+         db.session.add(user)
+db.session.commit()
+     except Exception as e:
+         current_app.logger.error(e)
+         db.session.rollback()
+6、返回结果给ajax
+ 
